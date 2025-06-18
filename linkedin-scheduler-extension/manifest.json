@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Scheduler",
+  "version": "1.0",
+  "description": "Automate LinkedIn post scheduling and engagement",
+  "permissions": [
+    "storage",
+    "tabs",
+    "notifications",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://*.linkedin.com/*",
+    "ws://localhost:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.linkedin.com/*"],
+      "js": ["calendar-utils.js", "engagement-utils.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["engagement-utils.js", "content.js", "calendar-utils.js"],
+      "matches": ["https://*.linkedin.com/*"]
+    }
+  ]
+} 

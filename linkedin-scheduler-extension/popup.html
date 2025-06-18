@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>LinkedIn Scheduler</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>LinkedIn Scheduler</h1>
+      <div class="connection-status">
+        <div id="connectionStatus" class="status-indicator disconnected"></div>
+        <span id="connectionText">Disconnected</span>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="scheduler">Scheduler</button>
+      <button class="tab" data-tab="engagement">Engagement</button>
+    </div>
+
+    <div class="tab-content active" id="scheduler-tab">
+      <div id="status" class="status"></div>
+      <div class="section">
+        <div class="scheduler-header">
+          <h2>Schedule Posts</h2>
+          <button id="scheduleAllPosts" class="action-button">Schedule Post</button>
+        </div>
+      <div id="scheduledPostsList"></div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="engagement-tab">
+      <div class="section">
+        <h3>Profile Configuration</h3>
+        <div class="input-group">
+          <label for="profileUrl">LinkedIn Profile URL:</label>
+          <input type="url" id="profileUrl" placeholder="https://www.linkedin.com/in/your-profile/recent-activity/all/" />
+          <button id="saveProfileUrl" class="btn">Save Profile</button>
+        </div>
+        <p class="help-text">Enter your LinkedIn profile's recent activity URL to track engagements</p>
+        <div id="profileStatus" class="status"></div>
+      </div>
+
+      <div class="section">
+        <h3>Engagement Tracking</h3>
+        <div class="engagement-controls">
+          <button id="findEngagements" class="btn">Find Recent Posts</button>
+        </div>
+        <div id="engagementStatus" class="status"></div>
+      </div>
+
+      <div class="section">
+        <h3>User Selection</h3>
+        <div class="user-selection-controls">
+          <div class="selection-actions">
+            <button id="selectAllUsers" class="btn">Select All</button>
+            <button id="deselectAllUsers" class="btn">Deselect All</button>
+            <button id="saveSelectedUsers" class="btn primary">Save Selection</button>
+          </div>
+        </div>
+        <div id="selectedUsersContainer" class="selected-users-section">
+          <div id="selectedUsersList" class="selected-users-list"></div>
+          <div id="selectionStatus" class="status"></div>
+        </div>
+      </div>
+
+      <div id="engagementList" class="engagement-list"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html> 
