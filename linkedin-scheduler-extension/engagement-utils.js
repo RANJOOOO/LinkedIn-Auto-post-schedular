@@ -1,21 +1,21 @@
 // Engagement Utilities for LinkedIn Scheduler Extension
 
-// Non-Connected Users Counter Class
-class NonConnectedCounter {
+// Non-Connected Users Counter Class - Extraction session only
+class ExtractionCounter {
   constructor() {
     this.MAX_LIMIT = 30;
     this._count = 0;
   }
 
   async initialize() {
-    const storage = await chrome.storage.local.get('nonConnectedUsers');
-    this._count = (storage.nonConnectedUsers || []).length;
+    const storage = await chrome.storage.local.get('extractionUsers');
+    this._count = (storage.extractionUsers || []).length;
     return this._count;
   }
 
   async getCount() {
-    const storage = await chrome.storage.local.get('nonConnectedUsers');
-    this._count = (storage.nonConnectedUsers || []).length;
+    const storage = await chrome.storage.local.get('extractionUsers');
+    this._count = (storage.extractionUsers || []).length;
     return this._count;
   }
 
@@ -36,8 +36,14 @@ class NonConnectedCounter {
   get maxLimit() {
     return this.MAX_LIMIT;
   }
+
+  async clear() {
+    await chrome.storage.local.remove('extractionUsers');
+    this._count = 0;
+  }
 }
 
+// Replace old counter with extraction counter for extraction phase
 window.EngagementUtils = {
   // Constants
   MAX_POST_AGE_DAYS: 3,
@@ -46,7 +52,7 @@ window.EngagementUtils = {
   isInitialized: false,
   WS_TIMEOUT: 30000, // 30 second timeout
   pendingMessages: new Map(), // Track pending messages
-  nonConnectedCounter: new NonConnectedCounter(), // Add counter instance
+  extractionCounter: new ExtractionCounter(),
   
   // Navigation URLs
   PROFILE_URL: 'https://www.linkedin.com/in/',
@@ -60,7 +66,6 @@ window.EngagementUtils = {
   initWebSocket() {
     if (this.ws) return;
     
-    console.log('Initializing WebSocket connection...');
     try {
       this.ws = new WebSocket(this.WS_URL);
       
@@ -75,7 +80,6 @@ window.EngagementUtils = {
       };
       
       this.ws.onclose = () => {
-        console.log('WebSocket disconnected');
         this.ws = null;
         // Don't set isInitialized to false here
       };
@@ -89,15 +93,12 @@ window.EngagementUtils = {
       this.ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          console.log('Received WebSocket message:', message);
 
           switch (message.type) {
             case 'connection_status':
-              console.log('Connection status update:', message.message);
               break;
 
             case 'posts_list':
-              console.log('Received posts list:', message.posts);
               break;
 
             case 'error':
@@ -105,25 +106,21 @@ window.EngagementUtils = {
               break;
 
             case 'post_due':
-              console.log('Received due post:', message);
               break;
 
             case 'profile_status':
-              console.log('Received profile status:', message);
               break;
 
             case 'profile_saved':
-              console.log('Profile saved successfully:', message.profile);
               break;
 
             case 'message_generated':
-              console.log('Message generated successfully:', message.message);
               // Resolve the pending message if it exists
               this.resolvePendingMessage(message.messageId, message);
               break;
 
             default:
-              console.log('Received message:', message);
+              break;
           }
         } catch (error) {
           console.warn('⚠️ Error handling WebSocket message:', error);
@@ -158,6 +155,9 @@ window.EngagementUtils = {
     if (this.isInitialized) return;
     
     console.log('Initializing EngagementUtils...');
+    
+    // Initialize extraction counter
+    await this.extractionCounter.initialize();
     
     // Try to initialize WebSocket but don't block on it
     try {
@@ -215,7 +215,6 @@ timeoutId = setTimeout(() => {
   async checkProfileExists(profileUrl) {
     try {
       const response = await this.sendWebSocketMessage('check_profile', { profileUrl });
-      console.log('Profile check response:', response);
       return response.type === 'profile_status' ? response.exists : false;
     } catch (error) {
       console.error('Error checking profile existence:', error);
@@ -416,6 +415,8 @@ timeoutId = setTimeout(() => {
     const posts = [];
     let processedPosts = 0;
     let uniqueReactors = new Set();
+    const processedPostIds = new Set(); // Track unique post IDs
+    const maxPosts = 50;
 
     try {
       // Helper function to check if we've reached the end of the feed
@@ -437,51 +438,70 @@ timeoutId = setTimeout(() => {
       };
       
       // Process posts until we find enough or reach the end
-      while (processedPosts < 50 && !isEndOfFeed()) {
+      while (processedPostIds.size < maxPosts && !isEndOfFeed()) {
         const postElements = document.querySelectorAll('.feed-shared-update-v2');
-        console.log(`📊 Found ${postElements.length} posts, processing...`);
+        console.log(`[FeedScroll] Found ${postElements.length} posts in DOM, processed so far: ${processedPostIds.size}`);
         
+        let limitReached = false;
         for (const postElement of postElements) {
-          if (processedPosts >= 50) break;
-          
+          const postId = postElement.getAttribute('data-urn') || postElement.getAttribute('data-id') || postElement.getAttribute('data-test-id');
+          if (!postId) continue;
+          if (processedPostIds.has(postId)) continue;
           try {
             // Create a post object with necessary properties
             const post = {
-            element: postElement,
-              postId: postElement.getAttribute('data-urn') || `post-${processedPosts}`,
-            type: this.getPostType(postElement),
-            content: postElement.querySelector('.feed-shared-update-v2__description')?.textContent || '',
+              element: postElement,
+              postId: postId,
+              type: this.getPostType(postElement),
+              content: postElement.querySelector('.feed-shared-update-v2__description')?.textContent || '',
               url: postElement.querySelector('a[data-control-name="post_timestamp"]')?.href || ''
             };
-            
             const postData = await this.processPost(post);
             if (postData) {
               posts.push(postData);
               processedPosts++;
-              
+              processedPostIds.add(postId);
+              console.log(`[FeedScroll] Processed postId: ${postId} (total unique: ${processedPostIds.size})`);
               // Track unique reactors
               if (postData.reactors) {
                 postData.reactors.forEach(reactor => uniqueReactors.add(reactor.profileUrl));
               }
             }
-        } catch (error) {
+            // After processing, check if limit is reached
+            if (await this.extractionCounter.isLimitReached()) {
+              console.log('❌ [LIMIT] 30-user limit reached. Stopping all further feed scrolling and post processing.');
+              limitReached = true;
+              break;
+            }
+          } catch (error) {
             console.error('❌ Error processing post:', error);
+          }
+          if (processedPostIds.size >= maxPosts) break;
         }
-      }
-
+        if (limitReached) break;
         // Try to load more posts if we haven't found enough
-        if (processedPosts < 50 && !isEndOfFeed()) {
+        if (processedPostIds.size < maxPosts && !isEndOfFeed()) {
           const loadedMore = await loadMorePosts();
-          if (!loadedMore) break;
+          if (!loadedMore) {
+            // Fallback: Scroll the window to trigger LinkedIn's infinite scroll
+            const scrollDistance = 1000;
+            const prevScrollY = window.scrollY;
+            window.scrollBy({ top: scrollDistance, behavior: 'smooth' });
+            console.log(`[FeedScroll] No 'Load more' button found. Scrolling window by ${scrollDistance}px (from ${prevScrollY} to ${window.scrollY + scrollDistance}) to trigger infinite scroll...`);
+            await this.wait(2000); // Wait for new posts to load
+            // Log the number of posts after scroll
+            const afterScrollPosts = document.querySelectorAll('.feed-shared-update-v2').length;
+            console.log(`[FeedScroll] Posts after scroll: ${afterScrollPosts}`);
+          }
         }
       }
       
-      console.log(`✅ Processed ${processedPosts} posts, found ${uniqueReactors.size} unique reactors`);
+      console.log(`✅ Processed ${processedPostIds.size} unique posts, found ${uniqueReactors.size} unique reactors`);
       return {
         success: true,
         posts,
         stats: {
-          totalPosts: processedPosts,
+          totalPosts: processedPostIds.size,
           uniqueReactors: uniqueReactors.size
         }
       };
@@ -743,8 +763,8 @@ timeoutId = setTimeout(() => {
     console.log('=============================');
     console.log('   - Initial scroll height:', currentHeight);
     console.log('   - Max no-new-reactions:', maxNoNewReactions);
-    console.log('   - Current non-connected count:', await this.nonConnectedCounter.getCount());
-    console.log('   - Limit:', this.nonConnectedCounter.maxLimit);
+    console.log('   - Current non-connected count:', await this.extractionCounter.getCount());
+    console.log('   - Limit:', this.extractionCounter.maxLimit);
     console.log('=============================\n');
 
     const cleanupAndReturn = async () => {
@@ -759,9 +779,9 @@ timeoutId = setTimeout(() => {
 
     while (noNewReactionsCount < maxNoNewReactions) {
       // Check non-connected limit before processing more reactors
-      if (await this.nonConnectedCounter.isLimitReached()) {
+      if (await this.extractionCounter.isLimitReached()) {
         console.log('\n❌ LIMIT CHECK - EXTRACTION STOPPED:');
-        console.log(`   - Current count: ${await this.nonConnectedCounter.getCount()}/${this.nonConnectedCounter.maxLimit}`);
+        console.log(`   - Current count: ${await this.extractionCounter.getCount()}/${this.extractionCounter.maxLimit}`);
         console.log(`   - Non-connected reactors found in this batch: ${nonConnectedCount}`);
         return await cleanupAndReturn();
       }
@@ -783,9 +803,9 @@ timeoutId = setTimeout(() => {
       // Process each reactor
       for (const element of reactorElements) {
         // Check limit before processing each reactor
-        if (await this.nonConnectedCounter.isLimitReached()) {
+        if (await this.extractionCounter.isLimitReached()) {
           console.log('\n❌ LIMIT CHECK - BATCH STOPPED:');
-          console.log(`   - Current count: ${await this.nonConnectedCounter.getCount()}/${this.nonConnectedCounter.maxLimit}`);
+          console.log(`   - Current count: ${await this.extractionCounter.getCount()}/${this.extractionCounter.maxLimit}`);
           console.log(`   - Non-connected reactors found in this batch: ${nonConnectedCount}`);
           return await cleanupAndReturn();
         }
@@ -826,7 +846,7 @@ timeoutId = setTimeout(() => {
                 console.log('\n✅ NEW USER SAVED:');
                 console.log('==================');
                 console.log(`   - User: ${reactorInfo.name}`);
-                console.log(`   - Storage Count: ${await this.nonConnectedCounter.getCount()}/${this.nonConnectedCounter.maxLimit}`);
+                console.log(`   - Storage Count: ${await this.extractionCounter.getCount()}/${this.extractionCounter.maxLimit}`);
                 console.log(`   - Non-connected count: ${nonConnectedCount}`);
                 console.log('==================\n');
               }
@@ -910,9 +930,9 @@ timeoutId = setTimeout(() => {
     
     for (const element of finalReactorElements) {
       // Check limit before processing final reactors
-      if (await this.nonConnectedCounter.isLimitReached()) {
+      if (await this.extractionCounter.isLimitReached()) {
         console.log('\n❌ LIMIT CHECK - FINAL VERIFICATION STOPPED:');
-        console.log(`   - Current count: ${await this.nonConnectedCounter.getCount()}/${this.nonConnectedCounter.maxLimit}`);
+        console.log(`   - Current count: ${await this.extractionCounter.getCount()}/${this.extractionCounter.maxLimit}`);
         console.log(`   - Non-connected reactors found in this batch: ${nonConnectedCount}`);
         return await cleanupAndReturn();
       }
@@ -953,7 +973,7 @@ timeoutId = setTimeout(() => {
               console.log('\n✅ NEW USER SAVED:');
               console.log('==================');
               console.log(`   - User: ${reactorInfo.name}`);
-              console.log(`   - Storage Count: ${await this.nonConnectedCounter.getCount()}/${this.nonConnectedCounter.maxLimit}`);
+              console.log(`   - Storage Count: ${await this.extractionCounter.getCount()}/${this.extractionCounter.maxLimit}`);
               console.log(`   - Non-connected count: ${nonConnectedCount}`);
               console.log('==================\n');
             }
@@ -1241,9 +1261,7 @@ timeoutId = setTimeout(() => {
       console.log(`\n🔄 Processing post: ${post.postId}`);
       
       // Check limit before processing
-      const result = await chrome.storage.local.get('nonConnectedUsers');
-      const nonConnectedUsers = result.nonConnectedUsers || [];
-      if (nonConnectedUsers.length >= this.nonConnectedCounter.maxLimit) {
+      if (await this.extractionCounter.isLimitReached()) {
         console.log('❌ Maximum limit of 30 non-connected users reached, stopping post processing');
         return null;
       }
@@ -1259,10 +1277,6 @@ timeoutId = setTimeout(() => {
       console.log('=====================');
       console.log(postContent);
       console.log('=====================\n');
-
-      // Scroll the post into view and wait for it to be fully visible
-      post.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(2000);
       
       // Find the reaction button
       const socialCounts = post.element.querySelector('.social-details-social-counts__reactions');
@@ -1320,8 +1334,7 @@ timeoutId = setTimeout(() => {
       for (const reactor of reactors) {
         try {
           // Check limit before processing each profile
-          const currentCount = (await chrome.storage.local.get('nonConnectedUsers')).nonConnectedUsers?.length || 0;
-          if (currentCount >= this.nonConnectedCounter.maxLimit) {
+          if (await this.extractionCounter.isLimitReached()) {
             console.log('❌ Maximum limit reached, stopping profile processing');
             break;
           }
@@ -1362,7 +1375,7 @@ timeoutId = setTimeout(() => {
             console.log(`ℹ️ Profile already exists: ${reactor.name}`);
           }
         } catch (error) {
-          console.error(`Error processing profile ${reactor.name}:`, error);
+          console.warn(`Error processing profile ${reactor.name}:`, error);
         }
       }
 
@@ -1476,8 +1489,16 @@ timeoutId = setTimeout(() => {
     }
   },
 
-  // Helper function to get non-connected count
+  // Helper function to get non-connected count (uses extraction storage during extraction)
   async getNonConnectedCount() {
+    // During extraction, use extractionUsers storage
+    const extractionStorage = await chrome.storage.local.get('extractionUsers');
+    const extractionUsers = extractionStorage.extractionUsers || [];
+    if (extractionUsers.length > 0) {
+      return extractionUsers.length;
+    }
+    
+    // Fallback to main storage if no extraction users
     const storage = await chrome.storage.local.get('nonConnectedUsers');
     return (storage.nonConnectedUsers || []).length;
   },
@@ -1498,40 +1519,26 @@ timeoutId = setTimeout(() => {
         // Process posts until we hit the limit
         for (const post of result.posts) {
             // Check if we've hit the limit before processing each post
-            const currentCount = await this.getNonConnectedCount();
-            if (currentCount >= this.nonConnectedCounter.maxLimit) {
+            if (await this.extractionCounter.isLimitReached()) {
                 console.log('Maximum limit reached, stopping post processing');
               break;
             }
             await this.processPost(post);
         }
 
-        // Get the non-connected users from storage
-        const storage = await chrome.storage.local.get('nonConnectedUsers');
-        const nonConnectedUsers = storage.nonConnectedUsers || [];
+        // Get the extracted users from extraction storage
+        const extractionUsers = await this.getExtractedUsers();
         
-        if (nonConnectedUsers.length > 0) {
-            console.log('Sending users to popup:', nonConnectedUsers);
+        if (extractionUsers.length > 0) {
+            console.log('Sending extracted users to popup:',extractionUsers);
             
-            // Send message to background script
-            console.log('Sending users_found message to background script...');
-            try {
-                await chrome.runtime.sendMessage({
-                    type: 'users_found',
-                    users: nonConnectedUsers.map(user => ({
-                        id: user.profileUrl,
-                        name: user.name,
-                        details: user.caption || 'No title available',  // Use caption instead of title
-                        postContent: user.postContent || '',
-                        reactionType: user.reactionType || ''
-                    }))
-                });
-                console.log('Users_found message sent successfully to background script');
-            } catch (error) {
-                console.warn('Warning: Issue sending users_found message:', error);
-              }
-            } else {
-            console.log('No non-connected users found to send');
+            // Merge extracted users to main storage
+            await this.mergeExtractedUsersToMain();
+            
+            
+            } 
+            else {
+            console.log('No extracted users found to send');
         }
 
         return true;
@@ -1577,41 +1584,24 @@ timeoutId = setTimeout(() => {
     return true;
   },
 
-  // Save non-connected user to MongoDB and Chrome storage
+  // Save non-connected user to extraction storage during extraction phase
   async saveNonConnectedToStorage(profileUrl, data) {
     try {
-      console.log('\n🔍 Checking if user exists in MongoDB...');
       const exists = await this.checkProfileExists(profileUrl);
       if (exists) {
-        console.log('⏭️ User already exists in MongoDB, skipping save');
         return false;
       }
-      console.log('✅ User not found in MongoDB, proceeding with save');
-
-      // Get current count from storage first
-      const result = await chrome.storage.local.get('nonConnectedUsers');
-      const nonConnectedUsers = result.nonConnectedUsers || [];
-      
-      // Check if user already exists in local storage
-      const existsInLocal = nonConnectedUsers.some(user => user.profileUrl === profileUrl);
-      if (existsInLocal) {
-        console.log('⏭️ User already exists in local storage');
+      const storage = await chrome.storage.local.get('extractionUsers');
+      const extractionUsers = storage.extractionUsers || [];
+      const existsInExtraction = extractionUsers.some(user => user.profileUrl === profileUrl);
+      if (existsInExtraction) {
         return false;
       }
-
-      // Check if adding this user would exceed the limit
-      if (nonConnectedUsers.length >= this.nonConnectedCounter.maxLimit) {
-        console.log('❌ Maximum limit of 30 non-connected users reached');
-        // Send message to popup even when we hit the limit
-        await this.sendUsersToPopup(nonConnectedUsers);
+      if (extractionUsers.length >= this.extractionCounter.maxLimit) {
+        console.log('[ENGAGEMENT-UTILS] Extraction limit reached.');
         return false;
       }
-
-      // Ensure WebSocket connection
-      await this.ensureWebSocketConnection();
-
-      // Send save_profile message to save in MongoDB
-      const response = await this.sendWebSocketMessage('save_profile', {
+      extractionUsers.push({
         profileUrl: profileUrl,
         name: data.name,
         connectionStatus: 'not_connected',
@@ -1624,87 +1614,12 @@ timeoutId = setTimeout(() => {
         caption: data.caption || '',
         savedAt: new Date().toISOString()
       });
-
-      if (this.validateResponse(response, 'profile_saved')) {
-        console.log('\n💾 Saving user data to local storage:');
-        console.log('==================================');
-        console.log('Name:', data.name);
-        console.log('Post Content:', data.postContent);
-        console.log('Reaction Type:', data.reactionType);
-        console.log('==================================\n');
-
-        // Add new user to array with post content
-        nonConnectedUsers.push({
-          profileUrl: profileUrl,
-          name: data.name,
-          connectionStatus: 'not_connected',
-          connectionDegree: '3rd',
-          postContent: data.postContent || '',
-          postId: data.postId,
-          postType: data.postType,
-          postUrl: data.postUrl,
-          reactionType: data.reactionType,
-          caption: data.caption || '',
-          savedAt: new Date().toISOString()
-        });
-
-        // Save updated array back to storage
-        await chrome.storage.local.set({ nonConnectedUsers });
-        
-        // Verify the save
-        const verifyStorage = await chrome.storage.local.get('nonConnectedUsers');
-        const savedUser = verifyStorage.nonConnectedUsers.find(u => u.profileUrl === profileUrl);
-        console.log('\n✅ Verification of saved data in local storage:');
-        console.log('==========================================');
-        console.log('User:', savedUser?.name);
-        console.log('Post Content:', savedUser?.postContent);
-        console.log('Reaction Type:', savedUser?.reactionType);
-        console.log('==========================================\n');
-        
-        // Update counter after successful save
-        await this.nonConnectedCounter.initialize();
-        
-        console.log('\n✅ Save Successful:');
-        console.log(`   - Saved to MongoDB: ${data.name}`);
-        console.log(`   - Saved to Local Storage: ${data.name}`);
-        console.log(`   - Updated Local Storage Count: ${nonConnectedUsers.length}/${this.nonConnectedCounter.maxLimit}`);
-
-        // If we've hit the limit after saving, send message to popup
-        if (nonConnectedUsers.length >= this.nonConnectedCounter.maxLimit) {
-          await this.sendUsersToPopup(nonConnectedUsers);
-        }
-
-        return true;
-      } else {
-        console.error('❌ Failed to save user to MongoDB');
-        return false;
-      }
+      await chrome.storage.local.set({ extractionUsers });
+      await this.extractionCounter.initialize();
+      return true;
     } catch (error) {
-      console.error('Error saving user:', error);
+      console.error('[ENGAGEMENT-UTILS] Error saving user to extraction storage:', error);
       return false;
-    }
-  },
-
-  // Helper method to send users to popup
-  async sendUsersToPopup(nonConnectedUsers) {
-    try {
-      console.log('Sending users to popup:', nonConnectedUsers);
-      console.log('Sending users_found message to background script...');
-      
-      await chrome.runtime.sendMessage({
-        type: 'users_found',
-        users: nonConnectedUsers.map(user => ({
-          id: user.profileUrl,
-          name: user.name,
-          details: user.caption || 'No title available',  // Use caption instead of title
-          postContent: user.postContent || '',
-          reactionType: user.reactionType || ''
-        }))
-      });
-      
-      console.log('Users_found message sent successfully to background script');
-    } catch (error) {
-      console.log('Warning: Issue sending users_found message:', error);
     }
   },
 
@@ -1716,6 +1631,42 @@ timeoutId = setTimeout(() => {
     } catch (error) {
       console.error('Error clearing non-connected users from Chrome storage:', error);
     }
+  },
+
+  // Add extracted user to extractionUsers storage
+  async addExtractedUser(user) {
+    const storage = await chrome.storage.local.get('extractionUsers');
+    const extractionUsers = storage.extractionUsers || [];
+    // Deduplicate by profileUrl
+    if (!extractionUsers.some(u => u.profileUrl === user.profileUrl)) {
+      extractionUsers.push(user);
+      await chrome.storage.local.set({ extractionUsers });
+      await this.extractionCounter.initialize();
+      return true;
+    }
+    return false;
+  },
+  // Get all extracted users
+  async getExtractedUsers() {
+    const storage = await chrome.storage.local.get('extractionUsers');
+    return storage.extractionUsers || [];
+  },
+  // Clear extraction users
+  async clearExtractedUsers() {
+    await this.extractionCounter.clear();
+  },
+  // Merge extracted users to main storage via background
+  async mergeExtractedUsersToMain() {
+    const extractionUsers = await this.getExtractedUsers();
+    if (extractionUsers.length > 0) {
+      await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type: 'merge_extracted_users', users: extractionUsers }, (response) => {
+          if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+          else resolve(response);
+        });
+      });
+    }
+    await this.clearExtractedUsers();
   },
 
   // Helper method to check if dropdown is loaded
@@ -1947,7 +1898,7 @@ timeoutId = setTimeout(() => {
                         }
 
                         // Wait to see if the connect modal appears
-                        await this.wait(3000);
+                        await this.wait(2000); // Reduced from 3s to 2s
                         const connectModal = profileTab.document.querySelector('.artdeco-modal');
                         if (connectModal) {
                             console.log('✅ Connect modal appeared after click');
@@ -1967,13 +1918,8 @@ timeoutId = setTimeout(() => {
                 
                 // Close the tab after all operations are complete
                 console.log('⏳ Waiting before closing tab...');
-                await this.wait(2000);
+                await this.wait(1000); // Reduced from 2s to 1s
                 profileTab.close();
-                
-                // Wait between requests
-                console.log('⏳ Waiting between requests...');
-                await this.wait(5000);
-
             } catch (error) {
                 console.log('⚠️ Issue processing user:', error);
                 stats.failed++;
@@ -1981,16 +1927,16 @@ timeoutId = setTimeout(() => {
                 // Always close the tab and wait before next user
                 if (profileTab) {
                     try {
-                        console.log('⏳ Waiting before closing tab...');
-                        await this.wait(2000);
-                        profileTab.close();
+                        if (!profileTab.closed) {
+                            profileTab.close();
+                        }
                     } catch (closeError) {
                         console.error('⚠️ Error closing tab:', closeError);
                     }
                 }
-                // Wait between requests
+                // Wait between requests (reduced to 2s)
                 console.log('⏳ Waiting between requests...');
-                await this.wait(8000);
+                await this.wait(2000);
             }
         }
 
@@ -2002,6 +1948,15 @@ timeoutId = setTimeout(() => {
         console.log(`   - Failed: ${stats.failed}`);
         console.log(`   - Skipped: ${stats.skipped}`);
         console.log('===============================\n');
+        // Clear nonConnectedUsers and selectedUsers from Chrome storage before closing the tab
+        if (chrome && chrome.storage && chrome.storage.local) {
+          await chrome.storage.local.remove(['nonConnectedUsers', 'selectedUsers']);
+          console.log('Cleared nonConnectedUsers and selectedUsers from Chrome storage');
+        }
+        // Request background to close the current tab
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ type: 'close_current_tab' });
+        }
 
     } catch (error) {
         console.error('❌ Error in sendConnectionRequests:', error);
@@ -2045,4 +2000,9 @@ window.EngagementUtils = EngagementUtils;
 // Export for module usage if needed
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = EngagementUtils;
+}
+if (chrome && chrome.storage && chrome.storage.local) {
+  chrome.storage.local.remove('extractionUsers', () => {
+    console.log('Cleared extractionUsers from Chrome storage');
+  });
 }

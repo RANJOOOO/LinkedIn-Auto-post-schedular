@@ -1,53 +1,74 @@
 // Helper function to validate LinkedIn URL
-function isValidLinkedInUrl(url) {
+function isValidLinkedInUrl(url) 
+{
   try {
     const urlObj = new URL(url);
-    return urlObj.hostname === 'www.linkedin.com' && 
+    return urlObj.hostname.includes('linkedin.com') && 
            urlObj.pathname.includes('/in/');
   } catch {
     return false;
   }
 }
 
-// User Selection State
+// User Selection State - only for UI selection, not storage
 let selectedUsers = new Set();
-let allUsers = [];
 
-// Add message listener for users found
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('Received message in popup:', message);
+// Load users from background script
+async function loadUsersFromBackground() {
+  try {
+    console.log('Popup: Requesting users from background script...');
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: 'get_all_users' }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(response);
+        }
+      });
+    });
     
-    if (message.type === 'users_found') {
-        console.log('Users found:', message.users);
-        // Map the data to use profileUrl instead of id and keep all information
-        allUsers = message.users.map(user => ({
-            ...user, // Preserve all original fields
-            name: user.name || '',
-            details: user.details || '',
-            profileUrl: user.id || user.profileUrl || '',
-            postContent: user.postContent || '',
-            reactionType: user.reactionType || '',
-            savedAt: new Date().toISOString()
-        }));
-        console.log('Mapped users with full data:', allUsers);
-        
-        // Display the users in the selection list
-        displayUsers(allUsers);
-        // Show the user selection section
+    if (response && response.success) {
+      console.log('Popup: Received users from background:', response.users);
+      displayUsers(response.users);
+      
         const container = document.getElementById('selectedUsersContainer');
         if (container) {
             container.style.display = 'block';
         }
-        // Update status
+      
         const statusElement = document.getElementById('engagementStatus');
         if (statusElement) {
-            statusElement.textContent = 'Users found and ready for selection';
+        statusElement.textContent = `${response.users.length} users available for selection`;
             statusElement.className = 'status success';
         }
-        // Send response back
+    } else {
+      console.error('Popup: Failed to get users from background:', response?.error);
+      updateStatus('Error loading users: ' + (response?.error || 'Unknown error'), 'error');
+    }
+  } catch (error) {
+    console.error('Popup: Error loading users from background:', error);
+    updateStatus('Error loading users: ' + error.message, 'error');
+  }
+}
+
+// Add message listener for user updates from background
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'users_updated') {
+    console.log('[MANUAL-USER-POPUP] Received users_updated from background:', message);
+    displayUsers(message.users);
+    
+    const statusElement = document.getElementById('engagementStatus');
+    if (statusElement) {
+      const sourceText = message.source === 'linkedin' ? 'LinkedIn' : 
+                        message.source === 'excel' ? 'Excel' : 
+                        message.source === 'manual' ? 'Manual' : 'Unknown';
+      statusElement.textContent = `Added ${message.addedCount} new users from ${sourceText} (${message.totalCount} total users available)`;
+      statusElement.className = 'status success';
+    }
+    
         sendResponse({ success: true });
     }
-    // Return true to indicate we will send a response asynchronously
+  
     return true;
 });
 
@@ -102,8 +123,9 @@ function handleCheckboxChange(e) {
     updateSelectedUsersDisplay();
 }
 
-// Display users in the selection list (FIXED)
+// Display users in the selection list (UPDATED for centralized approach)
 function displayUsers(users) {
+    console.log('[MANUAL-USER-POPUP] displayUsers called. Users:', users);
     console.log('=== DISPLAYING USERS ===');
     console.log('Number of users to display:', users.length);
     
@@ -179,6 +201,12 @@ function displayUsers(users) {
     // Restore scroll position
     container.scrollTop = scrollTop;
     updateSelectedUsersDisplay();
+
+    // Show manual add user form if users are present
+    const manualAddUserForm = document.getElementById('manualAddUserForm');
+    if (manualAddUserForm) {
+        manualAddUserForm.style.display = users.length > 0 ? 'flex' : 'none';
+    }
 }
 
 // Update the display of selected users count
@@ -189,7 +217,7 @@ function updateSelectedUsersDisplay() {
     }
 }
 
-// Initialize User Selection Interface
+// Initialize User Selection Interface (UPDATED for centralized approach)
 function initializeUserSelection() {
     console.log('Initializing user selection interface...');
     
@@ -205,11 +233,28 @@ function initializeUserSelection() {
     // Initialize event delegation
     initCheckboxDelegation();
 
-  // Select All functionality
-  selectAllButton.addEventListener('click', () => {
+    // Select All functionality (UPDATED)
+    selectAllButton.addEventListener('click', async () => {
         console.log('Select all clicked');
-        allUsers.forEach(user => {
-            selectedUsers.add(user.profileUrl);
+        try {
+            // Get all users from background script
+            const response = await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage({ type: 'get_all_users' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        reject(chrome.runtime.lastError);
+                    } else {
+                        resolve(response);
+                    }
+                });
+            });
+            
+            if (response && response.success) {
+                // Select all users
+                response.users.forEach(user => {
+                    const profileUrl = user.profileUrl || user.id;
+                    if (profileUrl) {
+                        selectedUsers.add(profileUrl);
+                    }
         });
         
         // Update UI directly
@@ -218,6 +263,10 @@ function initializeUserSelection() {
         });
         
     updateSelectedUsersDisplay();
+            }
+        } catch (error) {
+            console.error('Error selecting all users:', error);
+        }
   });
 
   // Deselect All functionality
@@ -233,85 +282,56 @@ function initializeUserSelection() {
     updateSelectedUsersDisplay();
   });
 
-    // Save Selection functionality (FIXED)
+    // Save Selection functionality (UPDATED)
   saveSelectedButton.addEventListener('click', async () => {
         console.log('=== SAVE SELECTION CLICKED ===');
         console.log('Current selectedUsers Set:', Array.from(selectedUsers));
-        console.log('All users count:', allUsers.length);
         
-        // Get current selected users directly from state
-        const selectedUserData = allUsers.filter(user => {
-            const profileUrl = user.profileUrl || user.id;
-            const isSelected = selectedUsers.has(profileUrl);
-            console.log(`User ${profileUrl} selected:`, isSelected);
-            return isSelected;
-        });
-
-        console.log('Selected user data to save:', selectedUserData);
-        console.log('Number of users to save:', selectedUserData.length);
-
-        if (selectedUserData.length === 0) {
+        if (selectedUsers.size === 0) {
             console.log('=== ERROR: No users selected ===');
             updateStatus('Please first select the user and then click the button', 'error');
             return;
         }
 
-        // Call saveSelectedUsers function with the selected data
-        await saveSelectedUsers();
-  });
-}
-
-// Load saved selected users
-async function loadSavedSelectedUsers() {
-    console.log('Loading saved selected users');
-    try {
-        const data = await chrome.storage.local.get(['selectedUsers']);
-        if (data.selectedUsers) {
-            console.log('Found saved users:', data.selectedUsers);
+        try {
+            // Get all users from background script to get full user data
+            const response = await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage({ type: 'get_all_users' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        reject(chrome.runtime.lastError);
+                    } else {
+                        resolve(response);
+                    }
+                });
+            });
             
-            // Clear existing selections
-            selectedUsers.clear();
-            
-            // Process each saved user
-            data.selectedUsers.forEach(user => {
-                const profileUrl = user.id || user.profileUrl;
-                if (profileUrl) {
-                    // Preserve all user data
-                    const userData = {
-                        name: user.name,
-                        details: user.details,
-                        profileUrl: profileUrl,
+            if (response && response.success) {
+                // Get selected user data
+                const selectedUserData = response.users.filter(user => {
+                    const profileUrl = user.profileUrl || user.id;
+                    return selectedUsers.has(profileUrl);
+                }).map(user => ({
+                    name: user.name || '',
+                    details: user.details || '',
+                    profileUrl: user.profileUrl || user.id || '',
                         postContent: user.postContent || '',
                         reactionType: user.reactionType || '',
                         savedAt: user.savedAt || new Date().toISOString()
-                    };
-                    
-                    console.log('Adding saved user with full data:', userData);
-                    selectedUsers.add(profileUrl);
-                    
-                    // Update allUsers array to include full data
-                    const existingUserIndex = allUsers.findIndex(u => u.profileUrl === profileUrl);
-                    if (existingUserIndex !== -1) {
-                        allUsers[existingUserIndex] = userData;
+                }));
+
+                console.log('Selected user data to save:', selectedUserData);
+                console.log('Number of users to save:', selectedUserData.length);
+
+                // Call saveSelectedUsers function with the selected data
+                await saveSelectedUsers(selectedUserData);
                     } else {
-                        allUsers.push(userData);
-                    }
-                } else {
-                    console.warn('Skipping user with no profile URL:', user);
-                }
-            });
-            
-            console.log('Loaded saved users with full data:', allUsers);
-            
-            // Update the display if users are already loaded
-            if (allUsers.length > 0) {
-                displayUsers(allUsers);
+                throw new Error(response?.error || 'Failed to get users from background');
             }
+        } catch (error) {
+            console.error('Error saving selected users:', error);
+            updateStatus('Error saving selected users: ' + error.message, 'error');
         }
-    } catch (error) {
-        console.error('Error loading saved selected users:', error);
-        updateStatus('Error loading saved selections', 'error');
-    }
+    });
 }
 
 // Consolidated initialization
@@ -368,40 +388,91 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Now load users and selections in PROPER ORDER:
     // 1. Load saved selections FIRST
-    await loadSavedSelectedUsers();
+    // This part is now handled by loadUsersFromBackground
+    // await loadSavedSelectedUsers(); 
     
     // 2. Then load user list with enhanced mapping
-    const result = await new Promise(resolve => 
-        chrome.storage.local.get(['nonConnectedUsers', 'lastUserUpdate'], resolve)
-    );
+    // This part is now handled by loadUsersFromBackground
+    // const result = await new Promise(resolve => 
+    //     chrome.storage.local.get(['nonConnectedUsers', 'lastUserUpdate'], resolve)
+    // );
     
-    if (result.nonConnectedUsers?.length > 0) {
-        console.log('Found stored users:', result.nonConnectedUsers);
-        // Enhanced mapping to include all fields while maintaining backward compatibility
-        allUsers = result.nonConnectedUsers.map(user => ({
-            name: user.name || '',
-            details: user.details || '',
-            profileUrl: user.id || user.profileUrl || '',
-            postContent: user.postContent || '',
-            reactionType: user.reactionType || '',
-            savedAt: user.savedAt || new Date().toISOString(),
-            // Preserve any additional fields that might exist
-            ...user
-        }));
+    // if (result.nonConnectedUsers?.length > 0) {
+    //     console.log('Found stored users:', result.nonConnectedUsers);
+    //     console.log('Current allUsers before loading stored users:', allUsers);
         
-        displayUsers(allUsers);
+    //     // Enhanced mapping to include all fields while maintaining backward compatibility
+    //     const storedUsers = result.nonConnectedUsers.map(user => ({
+    //         name: user.name || '',
+    //         details: user.details || user.caption || '',
+    //         profileUrl: user.id || user.profileUrl || '',
+    //         postContent: user.postContent || '',
+    //         reactionType: user.reactionType || '',
+    //         savedAt: user.savedAt || new Date().toISOString(),
+    //         // Preserve any additional fields that might exist
+    //         ...user
+    //     }));
         
-        const container = document.getElementById('selectedUsersContainer');
-        if (container) {
-            container.style.display = 'block';
-        }
+    //     console.log('Mapped stored users:', storedUsers);
         
-        const statusElement = document.getElementById('engagementStatus');
-        if (statusElement) {
-            statusElement.textContent = 'Users found and ready for selection';
-            statusElement.className = 'status success';
-        }
-    }
+    //     // MERGE stored users with existing users instead of replacing
+    //     // Create a map of existing users by profileUrl for quick lookup
+    //     const existingUsersMap = new Map();
+    //     allUsers.forEach(user => {
+    //         const profileUrl = user.profileUrl || user.id;
+    //         if (profileUrl) {
+    //             existingUsersMap.set(profileUrl, user);
+    //         }
+    //     });
+        
+    //     console.log(`Existing users count before loading stored: ${existingUsersMap.size}`);
+    //     console.log(`Stored users count: ${storedUsers.length}`);
+        
+    //     // Add stored users, but don't overwrite existing ones
+    //     let addedCount = 0;
+    //     storedUsers.forEach(storedUser => {
+    //         const profileUrl = storedUser.profileUrl || storedUser.id;
+    //         if (profileUrl && !existingUsersMap.has(profileUrl)) {
+    //             existingUsersMap.set(profileUrl, storedUser);
+    //             addedCount++;
+    //             console.log(`Added stored user: ${storedUser.name} (${profileUrl})`);
+    //         } else if (profileUrl) {
+    //             console.log(`Skipped duplicate stored user: ${storedUser.name} (${profileUrl})`);
+    //         }
+    //     });
+        
+    //     console.log(`Total stored users added: ${addedCount}`);
+        
+    //     // Convert map back to array
+    //     allUsers = Array.from(existingUsersMap.values());
+        
+    //     console.log(`Final allUsers count after loading stored: ${allUsers.length}`);
+        
+    //     // Save the merged user list back to storage for persistence
+    //     try {
+    //         await chrome.storage.local.set({ 
+    //             nonConnectedUsers: allUsers,
+    //             lastUserUpdate: new Date().toISOString()
+    //         });
+    //         console.log('Merged user list saved to storage');
+    //     } catch (error) {
+    //         console.error('Error saving merged user list:', error);
+    //     }
+        
+    //     displayUsers(allUsers);
+        
+    //     const container = document.getElementById('selectedUsersContainer');
+    //     if (container) {
+    //         container.style.display = 'block';
+    //     }
+        
+    //     const statusElement = document.getElementById('engagementStatus');
+    //     if (statusElement) {
+    //         const totalUsers = allUsers.length;
+    //         statusElement.textContent = `Loaded ${addedCount} stored users (${totalUsers} total users available)`;
+    //         statusElement.className = 'status success';
+    //     }
+    // }
 
     // Add engagement tab handling
     const findEngagementsButton = document.getElementById('findEngagements');
@@ -564,6 +635,173 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
     }
+
+    // Manual Add User Form Logic
+    const manualAddUserForm = document.getElementById('manualAddUserForm');
+    if (manualAddUserForm) {
+        manualAddUserForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const name = document.getElementById('manualUserName').value.trim();
+            const title = document.getElementById('manualUserTitle').value.trim();
+            const rawProfileUrl = document.getElementById('manualUserProfileUrl').value;
+            const profileUrl = rawProfileUrl.trim();
+            const postContent = document.getElementById('manualUserPostContent').value.trim();
+            const statusDiv = document.getElementById('manualAddUserStatus');
+            statusDiv.textContent = '';
+            statusDiv.className = 'status';
+            
+            // Debug logs for validation
+            console.log('[MANUAL-USER-POPUP] Raw profile URL:', rawProfileUrl);
+            console.log('[MANUAL-USER-POPUP] Trimmed profile URL:', profileUrl);
+            console.log('[MANUAL-USER-POPUP] Name:', name, 'Title:', title, 'PostContent:', postContent);
+            
+            // Validate fields
+            if (!name || !title || !profileUrl) {
+                statusDiv.textContent = 'Please fill in all required fields.';
+                statusDiv.className = 'status error';
+                console.log('[MANUAL-USER-POPUP] Validation failed: missing fields');
+                return;
+            }
+            
+            const isValid = isValidLinkedInUrl(profileUrl);
+            console.log('[MANUAL-USER-POPUP] isValidLinkedInUrl result:', isValid);
+            if (!isValid) {
+                statusDiv.textContent = 'Please enter a valid LinkedIn profile URL.';
+                statusDiv.className = 'status error';
+                console.log('[MANUAL-USER-POPUP] Validation failed: invalid LinkedIn URL');
+                return;
+            }
+            
+            // Send user to background script for addition
+            try {
+                console.log('[MANUAL-USER-POPUP] Sending add_manual_user message to background:', {
+                  name, details: title, profileUrl, postContent
+                });
+                const response = await new Promise((resolve, reject) => {
+                    chrome.runtime.sendMessage({
+                        type: 'add_manual_user',
+                        user: {
+                            name,
+                            details: title,
+                            profileUrl,
+                            postContent,
+                            reactionType: '',
+                            savedAt: new Date().toISOString(),
+                            source: 'manual' // Tag manual users
+                        }
+                    }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            reject(chrome.runtime.lastError);
+                        } else {
+                            console.log('[MANUAL-USER-POPUP] Received response from background:', response);
+                            resolve(response);
+                        }
+                    });
+                });
+                
+                if (response && response.success) {
+                    statusDiv.textContent = `User added successfully! (${response.addedCount} new, ${response.totalCount} total)`;
+                    statusDiv.className = 'status success';
+                    manualAddUserForm.reset();
+                    console.log('[MANUAL-USER-POPUP] User added successfully, UI updated.');
+                } else {
+                    statusDiv.textContent = 'Error: ' + (response?.error || 'Failed to add user');
+                    statusDiv.className = 'status error';
+                    console.log('[MANUAL-USER-POPUP] Error in response:', response);
+                }
+            } catch (error) {
+                console.error('[MANUAL-USER-POPUP] Error adding manual user:', error);
+                statusDiv.textContent = 'Error: ' + error.message;
+                statusDiv.className = 'status error';
+            }
+        });
+    }
+
+    // Excel Bulk Upload Logic
+    const uploadExcelBtn = document.getElementById('uploadExcelBtn');
+    const excelFileInput = document.getElementById('excelFileInput');
+    const excelUploadStatus = document.getElementById('excelUploadStatus');
+
+    if (uploadExcelBtn && excelFileInput) {
+        uploadExcelBtn.addEventListener('click', () => {
+            excelFileInput.value = '';
+            excelFileInput.click();
+        });
+
+        excelFileInput.addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            excelUploadStatus.textContent = 'Processing file...';
+            excelUploadStatus.className = 'status loading';
+            
+            try {
+                const data = await file.arrayBuffer();
+                const workbook = XLSX.read(data, { type: 'array' });
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const json = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+                if (!json.length) throw new Error('No data found in the Excel file.');
+
+                const usersToAdd = [];
+                json.forEach(row => {
+                    // Map columns: Link, First name, Last name, Position
+                    const profileUrl = (row['Link'] || '').trim();
+                    const firstName = (row['First name'] || '').trim();
+                    const lastName = (row['Last name'] || '').trim();
+                    const name = (firstName + ' ' + lastName).trim();
+                    const details = (row['Position'] || '').trim();
+                    
+                    // Only add if profileUrl and name are present
+                    if (profileUrl && name) {
+                        usersToAdd.push({
+                                name,
+                                details,
+                                profileUrl,
+                                postContent: '',
+                                reactionType: '',
+                                savedAt: new Date().toISOString(),
+                                source: 'excel' // Tag Excel users
+                            });
+                    }
+                });
+                
+                if (usersToAdd.length === 0) {
+                    excelUploadStatus.textContent = 'No valid users found in Excel file.';
+                    excelUploadStatus.className = 'status error';
+                    return;
+                }
+                
+                // Send users to background script for addition
+                const response = await new Promise((resolve, reject) => {
+                    chrome.runtime.sendMessage({
+                        type: 'add_excel_users',
+                        users: usersToAdd
+                    }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            reject(chrome.runtime.lastError);
+                        } else {
+                            resolve(response);
+                        }
+                    });
+                });
+                
+                if (response && response.success) {
+                    excelUploadStatus.textContent = `Successfully imported ${response.addedCount} user(s) from Excel (${response.totalCount} total users)`;
+                excelUploadStatus.className = 'status success';
+                } else {
+                    excelUploadStatus.textContent = 'Error: ' + (response?.error || 'Failed to import users');
+                    excelUploadStatus.className = 'status error';
+                }
+            } catch (error) {
+                console.error('Error processing Excel file:', error);
+                excelUploadStatus.textContent = 'Error: ' + error.message;
+                excelUploadStatus.className = 'status error';
+            }
+        });
+    }
+
+    // Load users from background script when popup opens
+    loadUsersFromBackground();
 });
 
 // Load Scheduled Posts
@@ -803,28 +1041,18 @@ function updateStatus(message, type = 'info') {
     }
 }
 
-async function saveSelectedUsers() {
+async function saveSelectedUsers(selectedUserData) {
     try {
-        // Get all data for selected users
-        const selectedUsersData = allUsers.filter(user => selectedUsers.has(user.profileUrl))
-            .map(user => ({
-                ...user, // Preserve all original fields
-                name: user.name || '',
-                details: user.details || '',
-                profileUrl: user.profileUrl || '',
-                postContent: user.postContent || '',
-                reactionType: user.reactionType || '',
-                savedAt: new Date().toISOString()
-            }));
-        
         // Save to chrome storage
-        await chrome.storage.local.set({ selectedUsers: selectedUsersData });
+        await chrome.storage.local.set({ selectedUsers: selectedUserData });
         
-        console.log('Saved selected users with full data:', selectedUsersData);
+        console.log('Saved selected users with full data:', selectedUserData);
         showStatus('Selected users saved successfully!', false);
 
         // Send message to background script with selected users data
-        chrome.runtime.sendMessage({ type: 'users_selected', users: selectedUsersData });
+        chrome.runtime.sendMessage({ type: 'users_selected', users: selectedUserData });
+        // NEW: Send message to save selected users to the database
+        chrome.runtime.sendMessage({ type: 'save_selected_users_to_db', users: selectedUserData });
     } catch (error) {
         console.error('Error saving selected users:', error);
         showStatus('Error saving selected users', true);

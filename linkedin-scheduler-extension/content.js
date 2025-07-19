@@ -51,13 +51,13 @@ if (window.linkedinSchedulerInjected) {
     }
     
     if (message.type === 'users_found') {
-      console.log('Content script forwarding users to background:', message.users);
+      console.log('[Content.js] Forwarding users_found message to background. Users:', message.users);
       // Forward the message to the background script
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
-          console.error('Error sending message to background:', chrome.runtime.lastError);
+          console.error('[Content.js] Error sending users_found message to background:', chrome.runtime.lastError);
         } else {
-          console.log('Message forwarded to background successfully');
+          console.log('[Content.js] users_found message forwarded to background successfully. Response:', response);
         }
       });
     }
@@ -352,41 +352,53 @@ if (window.linkedinSchedulerInjected) {
 
     async startEngagementProcess() {
       console.log('🎯 Starting engagement process...');
-      
       try {
         let attempts = 0;
         const maxAttempts = 30;
-        
         while (attempts < maxAttempts) {
           if (window.EngagementUtils) {
             console.log('✅ EngagementUtils found, initializing...');
             await window.EngagementUtils.initialize();
             break;
           }
-          
           console.log(`⏳ Waiting for EngagementUtils (attempt ${attempts + 1}/${maxAttempts})...`);
           await new Promise(resolve => setTimeout(resolve, 1000));
           attempts++;
         }
-        
         if (!window.EngagementUtils) {
           throw new Error('EngagementUtils not found after maximum attempts');
         }
-        
         console.log('🔍 Starting to find recent posts...');
         const result = await window.EngagementUtils.findRecentPosts();
-        
         if (result.success) {
           console.log(`✅ Found ${result.stats.totalPosts} posts with ${result.stats.uniqueReactors} unique reactors`);
-          
           if (result.stats.totalPosts > 0) {
             console.log('🔄 Starting to process all posts...');
             await window.EngagementUtils.processAllPosts();
+            // --- PRECISE FIX: Always send users_found after extraction ---
+            const extractionUsers = await window.EngagementUtils.getExtractedUsers();
+            if (extractionUsers && extractionUsers.length > 0) {
+              console.log('[Content.js] Sending users_found message to background after extraction. Users:', extractionUsers);
+              await chrome.runtime.sendMessage({
+                type: 'users_found',
+                users: extractionUsers.map(user => ({
+                  id: user.profileUrl,
+                  profileUrl: user.profileUrl,
+                  name: user.name,
+                  details: user.caption || 'No title available',
+                  postContent: user.postContent || '',
+                  reactionType: user.reactionType || '',
+                  source: 'extracted' // Tag extracted users
+                }))
+              });
+            } else {
+              console.log('[Content.js] No extracted users to send after extraction.');
+            }
+            // --- END FIX ---
           }
         } else {
           console.error('❌ Failed to find recent posts:', result.error);
         }
-
       } catch (error) {
         console.error('❌ Error in engagement process:', error);
       }

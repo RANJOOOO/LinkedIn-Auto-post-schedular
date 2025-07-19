@@ -35,9 +35,11 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
+      // Diagnostic log for message type
+      console.log('WebSocket message type:', data.type);
       console.log('Received message:', data);
 
-      switch (data.type) {
+      switch ((data.type || '').trim()) {
         case 'test_connection':
           // Send test connection response
           ws.send(JSON.stringify({
@@ -92,6 +94,27 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({
               type: 'error',
               message: 'Failed to check profile',
+              error: error.message
+            }));
+          }
+          break;
+
+        // --- BATCH PROFILE CHECK (NEW, non-breaking) ---
+        case 'check_profiles_batch':
+          try {
+            const { profileUrls } = data;
+            if (!Array.isArray(profileUrls)) throw new Error('profileUrls must be an array');
+            const foundProfiles = await Engagement.find({ profileUrl: { $in: profileUrls } }).select('profileUrl');
+            const foundUrls = foundProfiles.map(p => p.profileUrl);
+            ws.send(JSON.stringify({
+              type: 'profiles_status_batch',
+              existing: foundUrls,
+              notExisting: profileUrls.filter(url => !foundUrls.includes(url))
+            }));
+          } catch (error) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Failed to batch check profiles',
               error: error.message
             }));
           }

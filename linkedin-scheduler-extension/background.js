@@ -1728,134 +1728,287 @@ async function trackPostEngagement(postUrl) {
 
 // Message handling
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Background received message:', message);
+  (async () => {
+    try {
+      // Always send a response to prevent message channel from hanging
+      const sendErrorResponse = (error) => {
+        console.error('Error handling message:', error);
+        sendResponse({ success: false, error: error.message });
+      };
 
-  // Always send a response to prevent message channel from hanging
-  const sendErrorResponse = (error) => {
-    console.error('Error handling message:', error);
-    sendResponse({ success: false, error: error.message });
-  };
-
-  try {
-    // Handle different message types
-    switch (message.type) {
-      case 'users_selected':
-        console.log('Users selected:', message.users);
-        
-        // Forward the message to the active tab's content script
-        chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-          if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              type: 'start_connection_flow',
-              users: message.users
-            }, (response) => {
-              if (chrome.runtime.lastError) {
-                console.log('Error sending message to content script:', chrome.runtime.lastError);
-                sendResponse({ success: false, error: chrome.runtime.lastError.message });
-              } else {
-                console.log('Content script response:', response);
-                sendResponse(response);
-              }
-            });
-          } else {
-            console.error('No active tab found');
-            sendResponse({ success: false, error: 'No active tab found' });
-          }
-        });
-        return true; // Keep the message channel open for async response
-
-      case 'save_profile_url':
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'save_profile_url',
-            profileUrl: message.profileUrl
-          }));
+      // Handle different message types
+      switch (message.type) {
+        case 'users_selected':
+          console.log('Users selected:', message.users);
           
-          // Set up one-time message handler for the response
-          const messageHandler = (event) => {
-            const response = JSON.parse(event.data);
-            if (response.type === 'profile_url_saved') {
-              ws.removeEventListener('message', messageHandler);
-              sendResponse({ success: true });
-            } else if (response.type === 'error') {
-              ws.removeEventListener('message', messageHandler);
-              sendResponse({ success: false, error: response.message });
-            }
-          };
-          
-          ws.addEventListener('message', messageHandler);
-          return true; // Keep the message channel open for async response
-        } else {
-          sendResponse({ success: false, error: 'WebSocket not connected' });
-        }
-        break;
-
-      case 'get_profile_url':
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'get_profile_url'
-          }));
-          
-          // Set up one-time message handler for the response
-          const messageHandler = (event) => {
-            const response = JSON.parse(event.data);
-            if (response.type === 'profile_url_retrieved') {
-              ws.removeEventListener('message', messageHandler);
-              sendResponse({ 
-                success: true, 
-                profileUrl: response.profileUrl,
-                savedAt: response.savedAt
+          // Forward the message to the active tab's content script
+          chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+            if (tabs[0]) {
+              chrome.tabs.sendMessage(tabs[0].id, {
+                type: 'start_connection_flow',
+                users: message.users
+              }, (response) => {
+                if (chrome.runtime.lastError) {
+                  console.log('Error sending message to content script:', chrome.runtime.lastError);
+                  sendResponse({ success: false, error: chrome.runtime.lastError.message });
+                } else {
+                  console.log('Content script response:', response);
+                  sendResponse(response);
+                }
               });
-            } else if (response.type === 'error') {
-              ws.removeEventListener('message', messageHandler);
-              sendResponse({ success: false, error: response.message });
+            } else {
+              console.error('No active tab found');
+              sendResponse({ success: false, error: 'No active tab found' });
             }
-          };
-          
-          ws.addEventListener('message', messageHandler);
-          return true; // Keep the message channel open for async response
-        } else {
-          sendResponse({ success: false, error: 'WebSocket not connected' });
-        }
-        break;
-
-      case 'start_post_scheduling':
-        handlePostScheduling()
-          .then(() => sendResponse({ success: true }))
-          .catch(error => sendResponse({ success: false, error: error.message }));
-        return true; // Keep the message channel open for async response
-
-      case 'users_found':
-        console.log('Background script received users_found message with users:', message.users);
-        try {
-          // Store the users in chrome.storage.local with the same key as content script
-          chrome.storage.local.set({ 
-            nonConnectedUsers: message.users,
-            lastUserUpdate: new Date().toISOString()
-          }, () => {
-            console.log('Users stored in background storage');
-            // Try to send to popup if it's open
-            chrome.runtime.sendMessage(message).catch(error => {
-              // Ignore the error if popup is not open
-              console.log('Popup not open, users stored for later retrieval');
-            });
           });
-          return true;
-        } catch (error) {
-          console.error('Error handling users_found message:', error);
-          return false;
-        }
+          break;
 
-      default:
-        console.log('Unknown message type:', message.type);
-        sendResponse({ success: false, error: 'Unknown message type' });
-        return false;
+        case 'save_profile_url':
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'save_profile_url',
+              profileUrl: message.profileUrl
+            }));
+            
+            // Set up one-time message handler for the response
+            const messageHandler = (event) => {
+              const response = JSON.parse(event.data);
+              if (response.type === 'profile_url_saved') {
+                ws.removeEventListener('message', messageHandler);
+                sendResponse({ success: true });
+              } else if (response.type === 'error') {
+                ws.removeEventListener('message', messageHandler);
+                sendResponse({ success: false, error: response.message });
+              }
+            };
+            
+            ws.addEventListener('message', messageHandler);
+            break;
+          } else {
+            sendResponse({ success: false, error: 'WebSocket not connected' });
+          }
+          break;
+
+        case 'get_profile_url':
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'get_profile_url'
+            }));
+            
+            // Set up one-time message handler for the response
+            const messageHandler = (event) => {
+              const response = JSON.parse(event.data);
+              if (response.type === 'profile_url_retrieved') {
+                ws.removeEventListener('message', messageHandler);
+                sendResponse({ 
+                  success: true, 
+                  profileUrl: response.profileUrl,
+                  savedAt: response.savedAt
+                });
+              } else if (response.type === 'error') {
+                ws.removeEventListener('message', messageHandler);
+                sendResponse({ success: false, error: response.message });
+              }
+            };
+            
+            ws.addEventListener('message', messageHandler);
+            break;
+          } else {
+            sendResponse({ success: false, error: 'WebSocket not connected' });
+          }
+          break;
+
+        case 'start_post_scheduling':
+          handlePostScheduling()
+            .then(() => sendResponse({ success: true }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+
+        case 'users_found':
+          console.log('[Background.js] Received users_found message. Users:', message.users);
+          try {
+            // Use centralized user management
+            const result = await addUsers(message.users, 'linkedin');
+            console.log('[Background.js] After addUsers, nonConnectedUsers in storage will be updated.');
+            const { nonConnectedUsers } = await chrome.storage.local.get('nonConnectedUsers');
+            console.log('[Background.js] nonConnectedUsers after merge:', nonConnectedUsers);
+            sendResponse({ success: true, ...result });
+          } catch (error) {
+            console.error('[Background.js] Error handling users_found message:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'add_manual_user':
+          console.log('[MANUAL-USER-BG] Received add_manual_user message:', message.user);
+          try {
+            const result = await addUsers([message.user], 'manual');
+            sendResponse({ success: true, ...result });
+          } catch (error) {
+            console.error('[MANUAL-USER-BG] Error handling add_manual_user message:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'add_excel_users':
+          console.log('Background script received add_excel_users message with users:', message.users);
+          try {
+            const result = await addUsers(message.users, 'excel');
+            sendResponse({ success: true, ...result });
+          } catch (error) {
+            console.error('Error handling add_excel_users message:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'get_all_users':
+          console.log('Background script received get_all_users request');
+          try {
+            getUsersNotInDbForPopup().then(users => {
+              sendResponse({ success: true, users });
+            });
+          } catch (error) {
+            console.error('Error handling get_all_users message:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'close_current_tab':
+          if (sender.tab && sender.tab.id) {
+            chrome.tabs.remove(sender.tab.id);
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ success: false, error: 'No sender tab found' });
+          }
+          break;
+
+        case 'merge_extracted_users':
+          if (message.users && Array.isArray(message.users)) {
+            try {
+              // Use addUsers for consistent merging
+              const result = await addUsers(message.users, 'linkedin');
+              // Clear extractionUsers from storage
+              await chrome.storage.local.remove('extractionUsers');
+              sendResponse({ success: true, ...result });
+            } catch (error) {
+              sendResponse({ success: false, error: error.message });
+            }
+            return true;
+          }
+          break;
+
+        default:
+          console.log('Unknown message type:', message.type);
+          sendResponse({ success: false, error: 'Unknown message type' });
+      }
+    } catch (error) {
+      if (typeof sendErrorResponse === 'function') {
+        sendErrorResponse(error);
+      } else {
+        console.error('Error in message handler:', error);
+        sendResponse({ success: false, error: error.message });
+      }
     }
-  } catch (error) {
-    sendErrorResponse(error);
-  }
-  return true; // Keep the message channel open
+  })();
+  return true; // CRITICAL: Keep the message port open for async sendResponse
 }); 
+
+// Listen for messages from popup.js to save selected users to the database
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  if (message.type === 'save_selected_users_to_db' && Array.isArray(message.users)) {
+    console.log('[DB SAVE] Received save_selected_users_to_db message with', message.users.length, 'users');
+    try {
+      // Ensure WebSocket connection
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.log('[DB SAVE] WebSocket not open, initializing...');
+        await initializeWebSocket();
+      }
+      // Save each user to the database
+      for (const user of message.users) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          console.log('[DB SAVE] Sending user to DB:', user.profileUrl, user.name);
+          ws.send(JSON.stringify({ type: 'save_profile', ...user }));
+        } else {
+          console.error('[DB SAVE] WebSocket not open for user:', user.profileUrl);
+        }
+      }
+      console.log('[DB SAVE] Sent', message.users.length, 'selected users to DB via WebSocket');
+      if (sendResponse) sendResponse({ success: true });
+    } catch (err) {
+      console.error('[DB SAVE] Error saving selected users to DB:', err);
+      if (sendResponse) sendResponse({ success: false, error: err.message });
+    }
+  }
+});
+
+// Centralized User Management Functions
+let allUsers = []; // Central user storage in background
+
+// Initialize users from storage on startup
+async function initializeUsers() {
+  try {
+    const result = await chrome.storage.local.get(['nonConnectedUsers']);
+    allUsers = result.nonConnectedUsers || [];
+    console.log('Background: Initialized with', allUsers.length, 'users from storage');
+  } catch (error) {
+    console.error('Background: Error initializing users:', error);
+    allUsers = [];
+  }
+}
+
+// Add new users (manual, Excel, or LinkedIn)
+async function addUsers(newUsers, source = 'unknown') {
+  // Always merge with latest from storage
+  const result = await chrome.storage.local.get(['nonConnectedUsers']);
+  allUsers = result.nonConnectedUsers || [];
+  // Create a map of existing users by profileUrl for quick lookup
+  const existingUsersMap = new Map();
+  allUsers.forEach(user => {
+    const profileUrl = user.profileUrl || user.id;
+    if (profileUrl) {
+      existingUsersMap.set(profileUrl, user);
+    }
+  });
+  // Add new users, but don't overwrite existing ones
+  let addedCount = 0;
+  newUsers.forEach(newUser => {
+    const profileUrl = newUser.profileUrl || newUser.id;
+    if (profileUrl && !existingUsersMap.has(profileUrl)) {
+      // Set the source property for reliable filtering
+      newUser.source = source;
+      existingUsersMap.set(profileUrl, newUser);
+      addedCount++;
+    }
+  });
+  // Convert map back to array
+  allUsers = Array.from(existingUsersMap.values());
+  // Save to storage
+  await chrome.storage.local.set({ 
+    nonConnectedUsers: allUsers,
+    lastUserUpdate: new Date().toISOString()
+  });
+  // Notify popup if it's open
+  try {
+    await chrome.runtime.sendMessage({
+      type: 'users_updated',
+      users: allUsers,
+      addedCount: addedCount,
+      totalCount: allUsers.length,
+      source: source
+    });
+  } catch (e) {
+    // Ignore if popup not open
+  }
+  return { addedCount, totalCount: allUsers.length };
+}
+
+// Get all users
+async function getAllUsers() {
+  return allUsers;
+}
+
+// Initialize users when background script starts
+initializeUsers();
 
 // Extract the post scheduling logic into a reusable function
 async function handlePostScheduling() {
@@ -1972,3 +2125,41 @@ async function handlePostScheduling() {
     throw error;
   }
 } 
+
+// Add helper to filter users not in DB for popup
+async function getUsersNotInDbForPopup() {
+  const result = await chrome.storage.local.get(['nonConnectedUsers']);
+  allUsers = result.nonConnectedUsers || [];
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    // fallback: return all users if no WebSocket
+    return allUsers;
+  }
+  // Separate users by source
+  const extractedUsers = allUsers.filter(u => u.source === 'linkedin');
+  const manualExcelUsers = allUsers.filter(u => u.source !== 'linkedin');
+  const profileUrls = manualExcelUsers.map(u => u.profileUrl).filter(Boolean);
+  if (profileUrls.length === 0) return [...extractedUsers];
+  // Send batch check for manual/Excel users only
+  return new Promise((resolve) => {
+    function handler(event) {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'profiles_status_batch') {
+          ws.removeEventListener('message', handler);
+          // Only return manual/Excel users not in DB
+          const notInDb = msg.notExisting || [];
+          const filteredManualExcel = manualExcelUsers.filter(u => notInDb.includes(u.profileUrl));
+          resolve([...extractedUsers, ...filteredManualExcel]);
+        } else if (msg.type === 'error') {
+          ws.removeEventListener('message', handler);
+          resolve([...extractedUsers, ...manualExcelUsers]); // fallback: show all
+        }
+      } catch (e) {
+        ws.removeEventListener('message', handler);
+        resolve([...extractedUsers, ...manualExcelUsers]); // fallback: show all
+      }
+    }
+    ws.addEventListener('message', handler);
+    ws.send(JSON.stringify({ type: 'check_profiles_batch', profileUrls }));
+  });
+}
