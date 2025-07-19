@@ -1363,7 +1363,7 @@ timeoutId = setTimeout(() => {
               processedProfiles.push(reactor);
               // Verify the save
               const verifyStorage = await chrome.storage.local.get('nonConnectedUsers');
-              const savedUser = verifyStorage.nonConnectedUsers.find(u => u.profileUrl === reactor.url);
+              const savedUser = (verifyStorage.nonConnectedUsers || []).find(u => u.profileUrl === reactor.url);
               console.log('\n✅ Verification of saved data:');
               console.log('==========================');
               console.log('User:', savedUser?.name);
