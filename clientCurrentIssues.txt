@@ -1,0 +1,61 @@
+C:\Program Files\MongoDB\Server\8.0\bin
+.\mongod.exe --version
+C:\Program Files\MongoDB\Server\8.0\bin> .\mongosh.exe
+===Run these two commands [Only first time]=============
+use linkedinpost
+db.createUser({
+user: "linkedinpostun",
+pwd: "linkedinpostpwd",
+roles: [ { role: "readWrite", db: "linkedinpost" } ]
+})
+=========================================================
+In the mongodb compass, you will see the blog-scheduler database in it.
+This is how I have setup the local mongdob.
+
+[Content.js] Sending users_found message to background after extraction. Users: (30) [{…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}, {…}]
+background.bundle.js:1 Error: Could not establish connection. --------- The above is the error occuring in my browser
+
+=======================Error Above=====================
+
+====================Cursor Recommendation==================
+
+Based on the error and the log you're seeing, here's what's happening:
+The Issue
+The content script is successfully extracting 30 users and trying to send them to the background script using chrome.runtime.sendMessage(), but it's getting the "Receiving end does not exist" error.
+Why This Is Happening
+Timing Issue: The content script is trying to send a message to the background script, but the background script's message listener might not be properly initialized or ready to receive messages at that exact moment.
+Service Worker Context: In Manifest V3, the background script runs as a service worker, which can be suspended when not actively handling requests. The service worker might be in a suspended state when the content script tries to send the message.
+Message Listener Not Ready: The background script's message listener might not be fully set up when the content script tries to send the users_found message.
+The Flow That's Failing
+✅ Content script extracts 30 users successfully
+✅ Content script tries to send users_found message to background script
+❌ Background script's service worker is not ready to receive the message
+❌ Chrome throws "Receiving end does not exist" error
+
+====================Cursor Recommendation Ends==================
+
+The Root Cause
+The background script's service worker lifecycle management is causing the communication failure. Service workers can be suspended and restarted, which means the message listeners need to be re-established.
+What Should Happen
+The background script should be listening for users_found messages and properly handling them, but the service worker might be in a suspended state when the content script tries to send the message.
+This is a common issue with Manifest V3 extensions where the background service worker can be suspended for performance reasons, causing communication failures between content scripts and the background scrip
+
+====================Additional information from Cursor Ends==================
+
+CS
+Chandra Sekhar 10:38 PM
+Hi Ali - mongosh
+use blog-scheduler
+db.createUser({
+user: "linkedinpostun",
+pwd: "linkedinpostpwd",
+roles: [ { role: "readWrite", db: "blog-scheduler" } ]
+})
+
+I have used the same database name blog-scheduler as you were using..
+
+CS
+Chandra Sekhar 10:48 PM
+MONGODB_URI=mongodb://linkedinpostun:linkedinpostpwd@localhost:27017/blog-scheduler?authSource=blog-scheduler
+
+This is what I have in my env file.. kindly use that..
